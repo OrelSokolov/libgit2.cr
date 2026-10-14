@@ -93,6 +93,9 @@ lib LibGit2
   fun git_oid_tostr_s(id : Oid*) : UInt8*
   fun git_oid_cmp(a : Oid*, b : Oid*) : Int32
   fun git_oid_equal(a : Oid*, b : Oid*) : Int32
+  fun git_oid_fromstrn(out : Oid*, str : UInt8*, length : SizeT) : Int32
+  fun git_oid_fromraw(out : Oid*, raw : UInt8*) : Int32
+  fun git_oid_is_zero(id : Oid*) : Int32
 
   # ## Shared small types (git2/strarray.h, git2/buffer.h, git2/types.h)
 
@@ -123,7 +126,48 @@ lib LibGit2
     when : Time
   end
 
+  fun git_signature_dup(dest : Signature**, sig : Signature*) : Int32
   fun git_signature_free(sig : Signature*) : Void
+
+  # ## Config (git2/config.h)
+
+  type Config = Void
+
+  fun git_config_open_default(out : Config**) : Int32
+  fun git_config_snapshot(out : Config**, config : Config*) : Int32
+  fun git_config_free(cfg : Config*) : Void
+  fun git_config_get_string(out : UInt8**, cfg : Config*, name : UInt8*) : Int32
+  fun git_config_get_int32(out : Int32*, cfg : Config*, name : UInt8*) : Int32
+  fun git_config_get_bool(out : Int32*, cfg : Config*, name : UInt8*) : Int32
+
+  # ## Index (git2/index.h)
+
+  struct IndexTime
+    seconds : Int32
+    nanoseconds : UInt32
+  end
+
+  struct IndexEntry
+    ctime : IndexTime
+    mtime : IndexTime
+    dev : UInt32
+    ino : UInt32
+    mode : UInt32
+    uid : UInt32
+    gid : UInt32
+    file_size : UInt32
+    id : Oid
+    flags : UInt16
+    flags_extended : UInt16
+    path : UInt8*
+  end
+
+  type Index = Void
+
+  fun git_index_free(index : Index*) : Void
+  fun git_index_entrycount(index : Index*) : SizeT
+  fun git_index_get_byindex(index : Index*, n : SizeT) : IndexEntry*
+  fun git_index_get_bypath(index : Index*, path : UInt8*, stage : Int32) : IndexEntry*
 
   # ## Repository (git2/repository.h)
 
@@ -143,7 +187,11 @@ lib LibGit2
   fun git_repository_head_detached(repo : Repository*) : Int32
   fun git_repository_head_unborn(repo : Repository*) : Int32
   fun git_repository_workdir(repo : Repository*) : UInt8*
+  fun git_repository_path(repo : Repository*) : UInt8*
   fun git_repository_is_bare(repo : Repository*) : Int32
+  fun git_repository_state(repo : Repository*) : Int32 # git_repository_state_t
+  fun git_repository_config(out : Config**, repo : Repository*) : Int32
+  fun git_repository_index(out : Index**, repo : Repository*) : Int32
 
   # ## Objects (git2/object.h, git2/revparse.h)
 
@@ -155,6 +203,26 @@ lib LibGit2
   fun git_object_owner(obj : Object*) : Repository*
   fun git_object_free(object : Object*) : Void
   fun git_revparse_single(out : Object**, repo : Repository*, spec : UInt8*) : Int32
+  fun git_object_peel(out : Object**, object : Object*, type : Int32) : Int32
+
+  # ## Revision walk (git2/revwalk.h)
+
+  # git_sort_t
+  GIT_SORT_NONE        = 0
+  GIT_SORT_TOPOLOGICAL = (1 << 0)
+  GIT_SORT_TIME        = (1 << 1)
+  GIT_SORT_REVERSE     = (1 << 2)
+
+  type Revwalk = Void
+
+  fun git_revwalk_new(out : Revwalk**, repo : Repository*) : Int32
+  fun git_revwalk_reset(walker : Revwalk*) : Int32
+  fun git_revwalk_push(walk : Revwalk*, id : Oid*) : Int32
+  fun git_revwalk_push_head(walk : Revwalk*) : Int32
+  fun git_revwalk_hide(walk : Revwalk*, commit_id : Oid*) : Int32
+  fun git_revwalk_next(out : Oid*, walk : Revwalk*) : Int32 # GIT_ITEROVER when done
+  fun git_revwalk_sorting(walk : Revwalk*, sort_mode : UInt32) : Int32
+  fun git_revwalk_free(walk : Revwalk*) : Void
 
   # ## Commits (git2/commit.h)
 
@@ -209,6 +277,32 @@ lib LibGit2
   fun git_branch_name(out : UInt8**, ref : Reference*) : Int32
   fun git_branch_lookup(out : Reference**, repo : Repository*, branch_name : UInt8*, branch_type : Int32) : Int32
   fun git_branch_upstream_name(out : Buf*, repo : Repository*, refname : UInt8*) : Int32
+  fun git_branch_is_head(ref : Reference*) : Int32
+  fun git_branch_remote_name(out : Buf*, repo : Repository*, refname : UInt8*) : Int32
+
+  fun git_reference_iterator_new(out : ReferenceIterator**, repo : Repository*) : Int32
+  fun git_reference_next(out : Reference**, iter : ReferenceIterator*) : Int32  # GIT_ITEROVER when done
+  fun git_reference_next_name(out : UInt8**, iter : ReferenceIterator*) : Int32 # GIT_ITEROVER when done
+  fun git_reference_iterator_free(iter : ReferenceIterator*) : Void
+
+  # reference write operations
+  fun git_reference_create(out : Reference**, repo : Repository*, name : UInt8*, id : Oid*, force : Int32, log_message : UInt8*) : Int32
+  fun git_reference_rename(new_ref : Reference**, ref : Reference*, new_name : UInt8*, force : Int32, log_message : UInt8*) : Int32
+  fun git_reference_delete(ref : Reference*) : Int32
+
+  # ## Tags (git2/tag.h)
+
+  type Tag = Void
+
+  fun git_tag_lookup(out : Tag**, repo : Repository*, id : Oid*) : Int32
+  fun git_tag_free(tag : Tag*) : Void
+  fun git_tag_target(target_out : Object**, tag : Tag*) : Int32
+  fun git_tag_target_id(tag : Tag*) : Oid*
+  fun git_tag_target_type(tag : Tag*) : Int32 # git_object_t of the target
+  fun git_tag_name(tag : Tag*) : UInt8*
+  fun git_tag_tagger(tag : Tag*) : Signature*
+  fun git_tag_message(tag : Tag*) : UInt8*
+  fun git_tag_list(tag_names : StrArray*, repo : Repository*) : Int32
 
   # ## Trees and blobs (git2/tree.h, git2/blob.h)
 
@@ -230,6 +324,19 @@ lib LibGit2
   fun git_blob_free(blob : Blob*) : Void
   fun git_blob_rawcontent(blob : Blob*) : Void*
   fun git_blob_rawsize(blob : Blob*) : ObjSize
+  fun git_blob_filtered_content(out : Buf*, blob : Blob*, as_path : UInt8*, check_for_binary : Int32) : Int32
+
+  # ## Remotes (git2/remote.h)
+
+  type Remote = Void
+
+  fun git_remote_lookup(out : Remote**, repo : Repository*, name : UInt8*) : Int32
+  fun git_remote_free(remote : Remote*) : Void
+  fun git_remote_owner(remote : Remote*) : Repository*
+  fun git_remote_name(remote : Remote*) : UInt8*
+  fun git_remote_url(remote : Remote*) : UInt8*
+  fun git_remote_pushurl(remote : Remote*) : UInt8*
+  fun git_remote_list(out : StrArray*, repo : Repository*) : Int32
 
   # ## Blame (git2/blame.h)
 
@@ -394,6 +501,98 @@ lib LibGit2
   fun git_diff_stats_insertions(stats : DiffStats*) : SizeT
   fun git_diff_stats_deletions(stats : DiffStats*) : SizeT
   fun git_diff_stats_free(stats : DiffStats*) : Void
+
+  # git_diff_find_t (rename/copy detection for git_diff_find_similar)
+  GIT_DIFF_FIND_BY_CONFIG                  = 0
+  GIT_DIFF_FIND_RENAMES                    = (1 << 0)
+  GIT_DIFF_FIND_RENAMES_FROM_REWRITES      = (1 << 1)
+  GIT_DIFF_FIND_COPIES                     = (1 << 2)
+  GIT_DIFF_FIND_COPIES_FROM_UNMODIFIED     = (1 << 3)
+  GIT_DIFF_FIND_REWRITES                   = (1 << 4)
+  GIT_DIFF_BREAK_REWRITES                  = (1 << 5)
+  GIT_DIFF_FIND_AND_BREAK_REWRITES         = (1 << 4) | (1 << 5)
+  GIT_DIFF_FIND_FOR_UNTRACKED              = (1 << 6)
+  GIT_DIFF_FIND_ALL                        = 0x0ff
+  GIT_DIFF_FIND_IGNORE_LEADING_WHITESPACE  =     0
+  GIT_DIFF_FIND_IGNORE_WHITESPACE          = (1 << 12)
+  GIT_DIFF_FIND_DONT_IGNORE_WHITESPACE     = (1 << 13)
+  GIT_DIFF_FIND_EXACT_MATCH_ONLY           = (1 << 14)
+  GIT_DIFF_BREAK_REWRITES_FOR_RENAMES_ONLY = (1 << 15)
+  GIT_DIFF_FIND_REMOVE_UNMODIFIED          = (1 << 16)
+
+  DIFF_FIND_OPTIONS_VERSION = 1 # GIT_DIFF_FIND_OPTIONS_VERSION
+
+  struct DiffFindOptions
+    version : UInt32
+    flags : UInt32 # git_diff_find_t
+    rename_threshold : UInt16
+    rename_from_rewrite_threshold : UInt16
+    copy_threshold : UInt16
+    break_rewrite_threshold : UInt16
+    rename_limit : SizeT
+    metric : Void* # git_diff_similarity_metric*
+  end
+
+  fun git_diff_find_options_init(opts : DiffFindOptions*, version : UInt32) : Int32
+  fun git_diff_find_similar(diff : Diff*, options : DiffFindOptions*) : Int32
+
+  # ## Patches (git2/patch.h) — line-level access to a diff
+
+  # git_diff_line_t
+  GIT_DIFF_LINE_CONTEXT       = 32 # ' '
+  GIT_DIFF_LINE_ADDITION      = 43 # '+'
+  GIT_DIFF_LINE_DELETION      = 45 # '-'
+  GIT_DIFF_LINE_CONTEXT_EOFNL = 61 # '='
+  GIT_DIFF_LINE_ADD_EOFNL     = 62 # '>'
+  GIT_DIFF_LINE_DEL_EOFNL     = 60 # '<'
+  GIT_DIFF_LINE_FILE_HDR      = 70 # 'F'
+  GIT_DIFF_LINE_HUNK_HDR      = 72 # 'H'
+  GIT_DIFF_LINE_BINARY        = 66 # 'B'
+
+  # git_diff_format_t
+  GIT_DIFF_FORMAT_PATCH        = 1
+  GIT_DIFF_FORMAT_PATCH_HEADER = 2
+  GIT_DIFF_FORMAT_RAW          = 3
+  GIT_DIFF_FORMAT_NAME_ONLY    = 4
+  GIT_DIFF_FORMAT_NAME_STATUS  = 5
+  GIT_DIFF_FORMAT_PATCH_ID     = 6
+
+  DIFF_HUNK_HEADER_SIZE = 128 # GIT_DIFF_HUNK_HEADER_SIZE
+
+  struct DiffHunk
+    old_start : Int32 # starting line number in old_file
+    old_lines : Int32 # number of lines in old_file
+    new_start : Int32 # starting line number in new_file
+    new_lines : Int32 # number of lines in new_file
+    header_len : SizeT
+    header : UInt8[DIFF_HUNK_HEADER_SIZE] # NUL-terminated
+  end
+
+  struct DiffLine
+    origin : Int8      # git_diff_line_t
+    old_lineno : Int32 # -1 for added lines
+    new_lineno : Int32 # -1 for deleted lines
+    num_lines : Int32  # newline characters in content
+    content_len : SizeT
+    content_offset : OffT
+    content : UInt8* # NOT NUL-terminated; use content_len
+  end
+
+  type Patch = Void
+
+  fun git_patch_from_diff(out : Patch**, diff : Diff*, idx : SizeT) : Int32
+  fun git_patch_from_blobs(out : Patch**, old_blob : Blob*, old_as_path : UInt8*, new_blob : Blob*, new_as_path : UInt8*, opts : DiffOptions*) : Int32
+  fun git_patch_from_blob_and_buffer(out : Patch**, old_blob : Blob*, old_as_path : UInt8*, buffer : Void*, buffer_len : SizeT, buffer_as_path : UInt8*, opts : DiffOptions*) : Int32
+  fun git_patch_from_buffers(out : Patch**, old_buffer : Void*, old_len : SizeT, old_as_path : UInt8*, new_buffer : Void*, new_len : SizeT, new_as_path : UInt8*, opts : DiffOptions*) : Int32
+  fun git_patch_free(patch : Patch*) : Void
+  fun git_patch_get_delta(patch : Patch*) : DiffDelta*
+  fun git_patch_num_hunks(patch : Patch*) : SizeT
+  fun git_patch_get_hunk(out : DiffHunk**, lines_in_hunk : SizeT*, patch : Patch*, hunk_idx : SizeT) : Int32
+  fun git_patch_num_lines_in_hunk(patch : Patch*, hunk_idx : SizeT) : Int32
+  fun git_patch_get_line_in_hunk(out : DiffLine**, patch : Patch*, hunk_idx : SizeT, line_of_hunk : SizeT) : Int32
+  fun git_patch_line_stats(total_context : SizeT*, total_additions : SizeT*, total_deletions : SizeT*, patch : Patch*) : Int32
+  fun git_patch_size(patch : Patch*, include_context : Int32, include_hunk_headers : Int32, include_file_headers : Int32) : SizeT
+  fun git_patch_to_buf(out : Buf*, patch : Patch*, format : Int32) : Int32
 
   # ## Status (git2/status.h)
 

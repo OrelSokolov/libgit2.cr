@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  spec:
+    strategy:
+      fail-fast: false
+      matrix:
+        crystal: ["1.11.2", latest]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: ${{ matrix.crystal }}
+      - name: Install libgit2
+        run: sudo apt-get update && sudo apt-get install -y libgit2-dev
+      - name: Install shards dependencies
+        run: shards install
+      - name: Run specs
+        run: crystal spec
+      - name: Check formatting
+        run: crystal tool format --check src spec

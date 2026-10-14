@@ -21,12 +21,17 @@ private def make_fixture_repo(dir)
     raise "git #{args.first} failed" unless status.success?
   }
   run.call(["init", "--initial-branch=master"])
+  run.call(["config", "user.name", "Alice Author"])
+  run.call(["config", "user.email", "alice@example.com"])
+  run.call(["config", "test.int", "42"])
   File.write(File.join(dir, "a.txt"), "one\ntwo\n")
   run.call(["add", "a.txt"])
   run.call(["commit", "-m", "first commit"])
   File.write(File.join(dir, "a.txt"), "one\ntwo\nthree\n")
   run.call(["add", "a.txt"])
   run.call(["commit", "-m", "second commit"])
+  run.call(["tag", "-a", "v1.0", "-m", "release one"])
+  run.call(["remote", "add", "origin", "https://example.com/fixture.git"])
   File.write(File.join(dir, "a.txt"), "one changed\ntwo\nthree\n")
   File.write(File.join(dir, "b.txt"), "brand new\n")
 end
@@ -243,14 +248,249 @@ describe "libgit2 bindings" do
     second.lines_in_hunk.should eq(1)
     String.new(second.summary).should eq("second commit")
 
-    oid_zero = LibGit2::Oid.new
     first_id = first.final_commit_id
     second_id = second.final_commit_id
     first_oid = String.new(LibGit2.git_oid_tostr_s(pointerof(first_id)))
     second_oid = String.new(LibGit2.git_oid_tostr_s(pointerof(second_id)))
     first_oid.should_not eq(second_oid)
-    first_oid.should_not eq(String.new(LibGit2.git_oid_tostr_s(pointerof(oid_zero))))
+    LibGit2.git_oid_is_zero(pointerof(first_id)).should eq(0)
+    LibGit2.git_oid_is_zero(pointerof(second_id)).should eq(0)
 
     LibGit2.git_blame_free(blame)
+  end
+
+  it "reads repository config" do
+    cfg = uninitialized LibGit2::Config*
+    LibGit2.git_repository_config(pointerof(cfg), repo).should eq(LibGit2::GIT_OK)
+    # get_string needs a snapshot: reads on a live config object are rejected
+    snap = uninitialized LibGit2::Config*
+    LibGit2.git_config_snapshot(pointerof(snap), cfg).should eq(LibGit2::GIT_OK)
+
+    str = uninitialized UInt8*
+    LibGit2.git_config_get_string(pointerof(str), snap, "user.name").should eq(LibGit2::GIT_OK)
+    String.new(str).should eq("Alice Author")
+    LibGit2.git_config_get_string(pointerof(str), snap, "no.such.key").should eq(LibGit2::GIT_ENOTFOUND)
+
+    num = uninitialized Int32
+    LibGit2.git_config_get_int32(pointerof(num), snap, "test.int").should eq(LibGit2::GIT_OK)
+    num.should eq(42)
+
+    flag = uninitialized Int32
+    LibGit2.git_config_get_bool(pointerof(flag), snap, "core.bare").should eq(LibGit2::GIT_OK)
+    flag.should eq(0)
+
+    LibGit2.git_config_free(snap)
+    LibGit2.git_config_free(cfg)
+  end
+
+  it "lists index entries" do
+    index = uninitialized LibGit2::Index*
+    LibGit2.git_repository_index(pointerof(index), repo).should eq(LibGit2::GIT_OK)
+    LibGit2.git_index_entrycount(index).should eq(1) # b.txt is untracked
+
+    entry = LibGit2.git_index_get_byindex(index, 0).not_nil!.value
+    String.new(entry.path).should eq("a.txt")
+    entry_id = entry.id
+    LibGit2.git_oid_is_zero(pointerof(entry_id)).should eq(0)
+    (entry.mode & 0o170000).should eq(0o100000) # regular file
+
+    by_path = LibGit2.git_index_get_bypath(index, "a.txt", 0).should_not be_nil
+    String.new(by_path.value.path).should eq("a.txt")
+    LibGit2.git_index_get_bypath(index, "missing.txt", 0).null?.should be_true
+
+    LibGit2.git_index_free(index)
+  end
+
+  it "walks the history with revwalk" do
+    walk = uninitialized LibGit2::Revwalk*
+    LibGit2.git_revwalk_new(pointerof(walk), repo).should eq(LibGit2::GIT_OK)
+    LibGit2.git_revwalk_sorting(walk, LibGit2::GIT_SORT_TIME).should eq(LibGit2::GIT_OK)
+    LibGit2.git_revwalk_push_head(walk).should eq(LibGit2::GIT_OK)
+
+    summaries = [] of String
+    loop do
+      oid = uninitialized LibGit2::Oid
+      code = LibGit2.git_revwalk_next(pointerof(oid), walk)
+      break if code == LibGit2::GIT_ITEROVER
+      code.should eq(LibGit2::GIT_OK)
+      commit = uninitialized LibGit2::Commit*
+      LibGit2.git_commit_lookup(pointerof(commit), repo, pointerof(oid)).should eq(LibGit2::GIT_OK)
+      summaries << String.new(LibGit2.git_commit_summary(commit))
+      LibGit2.git_commit_free(commit)
+    end
+    LibGit2.git_revwalk_free(walk)
+    summaries.should eq(["second commit", "first commit"])
+  end
+
+  it "peels HEAD to a tree" do
+    obj = uninitialized LibGit2::Object*
+    LibGit2.git_revparse_single(pointerof(obj), repo, "HEAD").should eq(LibGit2::GIT_OK)
+    tree_obj = uninitialized LibGit2::Object*
+    LibGit2.git_object_peel(pointerof(tree_obj), obj, LibGit2::GIT_OBJECT_TREE).should eq(LibGit2::GIT_OK)
+    LibGit2.git_object_type(tree_obj).should eq(LibGit2::GIT_OBJECT_TREE)
+    LibGit2.git_object_free(tree_obj)
+    LibGit2.git_object_free(obj)
+  end
+
+  it "reads the annotated tag" do
+    names = uninitialized LibGit2::StrArray
+    LibGit2.git_tag_list(pointerof(names), repo).should eq(LibGit2::GIT_OK)
+    names.count.should eq(1)
+    String.new(names.strings[0]).should eq("v1.0")
+    LibGit2.git_strarray_dispose(pointerof(names))
+
+    obj = uninitialized LibGit2::Object*
+    LibGit2.git_revparse_single(pointerof(obj), repo, "v1.0").should eq(LibGit2::GIT_OK)
+    LibGit2.git_object_type(obj).should eq(LibGit2::GIT_OBJECT_TAG)
+    tag = obj.as(LibGit2::Tag*)
+
+    String.new(LibGit2.git_tag_name(tag)).should eq("v1.0")
+    String.new(LibGit2.git_tag_message(tag)).should eq("release one\n")
+    String.new(LibGit2.git_tag_tagger(tag).value.name).should eq("Carol Committer")
+    LibGit2.git_tag_target_type(tag).should eq(LibGit2::GIT_OBJECT_COMMIT)
+
+    target = uninitialized LibGit2::Object*
+    LibGit2.git_tag_target(pointerof(target), tag).should eq(LibGit2::GIT_OK)
+    LibGit2.git_object_type(target).should eq(LibGit2::GIT_OBJECT_COMMIT)
+    LibGit2.git_object_free(target)
+    LibGit2.git_object_free(obj)
+  end
+
+  it "reads remotes" do
+    list = uninitialized LibGit2::StrArray
+    LibGit2.git_remote_list(pointerof(list), repo).should eq(LibGit2::GIT_OK)
+    list.count.should eq(1)
+    String.new(list.strings[0]).should eq("origin")
+    LibGit2.git_strarray_dispose(pointerof(list))
+
+    remote = uninitialized LibGit2::Remote*
+    LibGit2.git_remote_lookup(pointerof(remote), repo, "origin").should eq(LibGit2::GIT_OK)
+    String.new(LibGit2.git_remote_name(remote)).should eq("origin")
+    String.new(LibGit2.git_remote_url(remote)).should eq("https://example.com/fixture.git")
+    LibGit2.git_remote_free(remote)
+  end
+
+  it "iterates all references" do
+    iter = uninitialized LibGit2::ReferenceIterator*
+    LibGit2.git_reference_iterator_new(pointerof(iter), repo).should eq(LibGit2::GIT_OK)
+    names = [] of String
+    loop do
+      name = uninitialized UInt8*
+      code = LibGit2.git_reference_next_name(pointerof(name), iter)
+      break if code == LibGit2::GIT_ITEROVER
+      code.should eq(LibGit2::GIT_OK)
+      names << String.new(name)
+    end
+    LibGit2.git_reference_iterator_free(iter)
+    names.should contain("refs/heads/master")
+    names.should contain("refs/tags/v1.0")
+  end
+
+  it "exposes patch hunks and lines for a modified file" do
+    head_obj = uninitialized LibGit2::Object*
+    LibGit2.git_revparse_single(pointerof(head_obj), repo, "HEAD").should eq(LibGit2::GIT_OK)
+    head_tree = uninitialized LibGit2::Tree*
+    LibGit2.git_tree_lookup(pointerof(head_tree), repo, LibGit2.git_commit_tree_id(head_obj.as(LibGit2::Commit*))).should eq(LibGit2::GIT_OK)
+    LibGit2.git_object_free(head_obj)
+
+    opts = uninitialized LibGit2::DiffOptions
+    LibGit2.git_diff_options_init(pointerof(opts), LibGit2::DIFF_OPTIONS_VERSION).should eq(LibGit2::GIT_OK)
+    diff = uninitialized LibGit2::Diff*
+    LibGit2.git_diff_tree_to_workdir_with_index(pointerof(diff), repo, head_tree, pointerof(opts)).should eq(LibGit2::GIT_OK)
+    LibGit2.git_tree_free(head_tree)
+
+    patch = uninitialized LibGit2::Patch*
+    LibGit2.git_patch_from_diff(pointerof(patch), diff, 0).should eq(LibGit2::GIT_OK) # a.txt delta
+    String.new(LibGit2.git_patch_get_delta(patch).value.new_file.path).should eq("a.txt")
+
+    LibGit2.git_patch_num_hunks(patch).should eq(1)
+    lines_in_hunk = uninitialized LibGit2::SizeT
+    hunk_p = uninitialized LibGit2::DiffHunk*
+    LibGit2.git_patch_get_hunk(pointerof(hunk_p), pointerof(lines_in_hunk), patch, 0).should eq(LibGit2::GIT_OK)
+    hunk = hunk_p.value
+    hunk.old_start.should eq(1)
+    hunk.new_start.should eq(1)
+    lines_in_hunk.should eq(4) # 1 deletion + 1 addition + 2 context
+    LibGit2.git_patch_num_lines_in_hunk(patch, 0).should eq(4)
+
+    lines = [] of Tuple(Int8, Int32, Int32, String)
+    4.times do |i|
+      line_p = uninitialized LibGit2::DiffLine*
+      LibGit2.git_patch_get_line_in_hunk(pointerof(line_p), patch, 0, i).should eq(LibGit2::GIT_OK)
+      line = line_p.value
+      lines << {line.origin, line.old_lineno, line.new_lineno,
+                String.new(line.content, line.content_len)}
+    end
+    # git renders this change as: -one, +one changed, context two, context three
+    lines[0][0].should eq(LibGit2::GIT_DIFF_LINE_DELETION.to_i8!)
+    lines[0][2].should eq(-1) # deleted lines have no new_lineno
+    lines[1][0].should eq(LibGit2::GIT_DIFF_LINE_ADDITION.to_i8!)
+    lines[1][2].should eq(1) # first line of the new file version
+    lines[1][3].should eq("one changed\n")
+    lines[2][3].should eq("two\n")
+    lines[3][3].should eq("three\n")
+
+    ctx = uninitialized LibGit2::SizeT
+    adds = uninitialized LibGit2::SizeT
+    dels = uninitialized LibGit2::SizeT
+    LibGit2.git_patch_line_stats(pointerof(ctx), pointerof(adds), pointerof(dels), patch).should eq(LibGit2::GIT_OK)
+    {ctx, adds, dels}.should eq({2, 1, 1})
+
+    buf = LibGit2::Buf.new # must be zero-initialized (GIT_BUF_INIT)
+    LibGit2.git_patch_to_buf(pointerof(buf), patch, LibGit2::GIT_DIFF_FORMAT_PATCH).should eq(LibGit2::GIT_OK)
+    text = String.new(buf.ptr, buf.size)
+    text.should contain("one changed")
+    text.should contain("-one")
+    LibGit2.git_buf_dispose(pointerof(buf))
+
+    LibGit2.git_patch_free(patch)
+    LibGit2.git_diff_free(diff)
+  end
+
+  it "builds a patch straight from buffers" do
+    patch = uninitialized LibGit2::Patch*
+    old = "alpha\nbeta\n"
+    new = "alpha\nbeta!\n"
+    LibGit2.git_patch_from_buffers(pointerof(patch), old, old.bytesize, "f.txt", new, new.bytesize, "f.txt", nil)
+      .should eq(LibGit2::GIT_OK)
+    LibGit2.git_patch_num_hunks(patch).should eq(1)
+    delta = LibGit2.git_patch_get_delta(patch).value
+    delta.status.should eq(LibGit2::GIT_DELTA_MODIFIED)
+    LibGit2.git_patch_free(patch)
+  end
+
+  it "detects renames with find_similar" do
+    # stage a rename; mutates the fixture, keep this test last
+    status = Process.run("git", {"mv", "a.txt", "c.txt"}, chdir: fixture,
+      output: Process::Redirect::Close, error: Process::Redirect::Close)
+    status.success?.should be_true
+
+    head_obj = uninitialized LibGit2::Object*
+    LibGit2.git_revparse_single(pointerof(head_obj), repo, "HEAD").should eq(LibGit2::GIT_OK)
+    head_tree = uninitialized LibGit2::Tree*
+    LibGit2.git_tree_lookup(pointerof(head_tree), repo, LibGit2.git_commit_tree_id(head_obj.as(LibGit2::Commit*))).should eq(LibGit2::GIT_OK)
+    LibGit2.git_object_free(head_obj)
+
+    opts = uninitialized LibGit2::DiffOptions
+    LibGit2.git_diff_options_init(pointerof(opts), LibGit2::DIFF_OPTIONS_VERSION).should eq(LibGit2::GIT_OK)
+    diff = uninitialized LibGit2::Diff*
+    LibGit2.git_diff_tree_to_workdir_with_index(pointerof(diff), repo, head_tree, pointerof(opts)).should eq(LibGit2::GIT_OK)
+
+    # before rename detection: split into delete a.txt + add c.txt
+    LibGit2.git_diff_num_deltas(diff).should eq(2)
+
+    find_opts = uninitialized LibGit2::DiffFindOptions
+    LibGit2.git_diff_find_options_init(pointerof(find_opts), LibGit2::DIFF_FIND_OPTIONS_VERSION).should eq(LibGit2::GIT_OK)
+    find_opts.flags = LibGit2::GIT_DIFF_FIND_RENAMES
+    LibGit2.git_diff_find_similar(diff, pointerof(find_opts)).should eq(LibGit2::GIT_OK)
+
+    renamed = LibGit2.git_diff_get_delta(diff, 0).not_nil!.value
+    renamed.status.should eq(LibGit2::GIT_DELTA_RENAMED)
+    String.new(renamed.old_file.path).should eq("a.txt")
+    String.new(renamed.new_file.path).should eq("c.txt")
+    renamed.similarity.should be > 0
+
+    LibGit2.git_diff_free(diff)
+    LibGit2.git_tree_free(head_tree)
   end
 end
