@@ -1,0 +1,6 @@
+name: libgit2
+description: Raw Crystal bindings to the libgit2 C API (git2.h), no wrappers
+version: 0.1.0
+authors:
+  - oleg
+license: MIT
